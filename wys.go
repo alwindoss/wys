@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
-	"log"
 	"net/http"
 	"path/filepath"
 
@@ -23,6 +22,7 @@ type Config struct {
 	FuncMap        template.FuncMap
 	pagesPath      string
 	layoutsPath    string
+	InProduction   bool
 }
 
 type TemplateData struct {
@@ -44,7 +44,7 @@ type TemplateData struct {
 }
 
 type ViewManager interface {
-	Render(w http.ResponseWriter, r *http.Request, tmpl string, data *TemplateData)
+	Render(w http.ResponseWriter, r *http.Request, tmpl string, data *TemplateData) error
 }
 
 type viewManager struct {
@@ -53,23 +53,35 @@ type viewManager struct {
 }
 
 // Render implements ViewManager.
-func (m *viewManager) Render(w http.ResponseWriter, r *http.Request, tmpl string, data *TemplateData) {
+func (m *viewManager) Render(w http.ResponseWriter, r *http.Request, tmpl string, data *TemplateData) error {
 	data = m.addDefaultData(r, data)
+	var err error
+	// Only in case of development usecase the library will fail when something
+	// goes wrong with the parsing and caching of templates
+	if !m.cfg.InProduction {
+		m.templateCache, err = cacheTemplatesForDevelopment(m.cfg)
+		if err != nil {
+			err = fmt.Errorf("unable to cache templates for development: %w", err)
+			return err
+		}
+	}
 	t, ok := m.templateCache[tmpl]
 	if !ok {
-		err := fmt.Errorf("unable to find %s in template cache", tmpl)
-		log.Fatal(err)
+		err = fmt.Errorf("unable to find %s in template cache", tmpl)
+		return err
 	}
 	buff := new(bytes.Buffer)
-	err := t.Execute(buff, data)
+	err = t.Execute(buff, data)
 	if err != nil {
-		log.Fatal(err)
+		err = fmt.Errorf("error when executing template: %w", err)
+		return err
 	}
 	_, err = buff.WriteTo(w)
 	if err != nil {
-		log.Printf("error writing template to browser: %v", err)
-		return
+		err = fmt.Errorf("error writing template to browser: %w", err)
+		return err
 	}
+	return nil
 }
 
 func (m *viewManager) addDefaultData(r *http.Request, td *TemplateData) *TemplateData {
@@ -84,9 +96,18 @@ func New(cfg *Config) (ViewManager, error) {
 
 	cfg.layoutsPath = layoutsPath
 	cfg.pagesPath = pagesPath
-	cache, err := cacheTemplates(cfg)
-	if err != nil {
-		return nil, err
+	var cache map[string]*template.Template
+	var err error
+	if cfg.InProduction {
+		cache, err = cacheTemplatesForProduction(cfg)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		cache, err = cacheTemplatesForDevelopment(cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &viewManager{
 		templateCache: cache,
@@ -94,7 +115,7 @@ func New(cfg *Config) (ViewManager, error) {
 	}, nil
 }
 
-func cacheTemplates(cfg *Config) (map[string]*template.Template, error) {
+func cacheTemplatesForProduction(cfg *Config) (map[string]*template.Template, error) {
 	cache := map[string]*template.Template{}
 	pages, err := fs.Glob(cfg.FS, cfg.pagesPath)
 	if err != nil {
@@ -115,6 +136,39 @@ func cacheTemplates(cfg *Config) (map[string]*template.Template, error) {
 		}
 		if len(matches) > 0 {
 			ts, err = ts.ParseFS(cfg.FS, cfg.layoutsPath)
+			if err != nil {
+				err = fmt.Errorf("unable to ParseGlob: %w", err)
+				return nil, err
+			}
+		}
+		cache[name] = ts
+	}
+	return cache, nil
+}
+
+func cacheTemplatesForDevelopment(cfg *Config) (map[string]*template.Template, error) {
+	cache := map[string]*template.Template{}
+	// pages, err := fs.Glob(filepath., cfg.pagesPath)
+	pages, err := filepath.Glob(cfg.pagesPath)
+	if err != nil {
+		err = fmt.Errorf("error glob: %w", err)
+		return nil, err
+	}
+	for _, page := range pages {
+		name := filepath.Base(page)
+		ts, err := template.New(name).Funcs(cfg.FuncMap).ParseFS(cfg.FS, page)
+		if err != nil {
+			err = fmt.Errorf("unable to ParseFiles: %w", err)
+			return nil, err
+		}
+		matches, err := filepath.Glob(cfg.layoutsPath)
+		// matches, err := fs.Glob(cfg.FS, cfg.layoutsPath)
+		if err != nil {
+			err = fmt.Errorf("unable to fs.Glob: %w", err)
+			return nil, err
+		}
+		if len(matches) > 0 {
+			ts, err = ts.ParseGlob(cfg.layoutsPath)
 			if err != nil {
 				err = fmt.Errorf("unable to ParseGlob: %w", err)
 				return nil, err
