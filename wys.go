@@ -77,8 +77,9 @@ func (m *viewManager) addDefaultData(r *http.Request, td *TemplateData) *Templat
 
 func New(cfg *Config) (ViewManager, error) {
 	cache := map[string]*template.Template{}
-	pagesPath := filepath.Join(cfg.PageLocation, cfg.PagePattern)
-	layoutsPath := filepath.Join(cfg.LayoutLocation, cfg.LayoutPattern)
+	// Not using filepath.Join because embed.FS does not work with windows path (ex: "\")
+	pagesPath := cfg.PageLocation + "/" + cfg.PagePattern
+	layoutsPath := cfg.LayoutLocation + "/" + cfg.LayoutPattern
 	pages, err := fs.Glob(cfg.FS, pagesPath)
 	if err != nil {
 		log.Printf("error glob: %v", err)
