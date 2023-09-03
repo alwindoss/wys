@@ -21,6 +21,8 @@ type Config struct {
 	LayoutLocation string
 	LayoutPattern  string
 	FuncMap        template.FuncMap
+	pagesPath      string
+	layoutsPath    string
 }
 
 type TemplateData struct {
@@ -76,40 +78,51 @@ func (m *viewManager) addDefaultData(r *http.Request, td *TemplateData) *Templat
 }
 
 func New(cfg *Config) (ViewManager, error) {
-	cache := map[string]*template.Template{}
 	// Not using filepath.Join because embed.FS does not work with windows path (ex: "\")
 	pagesPath := cfg.PageLocation + "/" + cfg.PagePattern
 	layoutsPath := cfg.LayoutLocation + "/" + cfg.LayoutPattern
-	pages, err := fs.Glob(cfg.FS, pagesPath)
+
+	cfg.layoutsPath = layoutsPath
+	cfg.pagesPath = pagesPath
+	cache, err := cacheTemplates(cfg)
 	if err != nil {
-		log.Printf("error glob: %v", err)
+		return nil, err
+	}
+	return &viewManager{
+		templateCache: cache,
+		cfg:           cfg,
+	}, nil
+}
+
+func cacheTemplates(cfg *Config) (map[string]*template.Template, error) {
+	cache := map[string]*template.Template{}
+	pages, err := fs.Glob(cfg.FS, cfg.pagesPath)
+	if err != nil {
+		err = fmt.Errorf("error glob: %w", err)
 		return nil, err
 	}
 	for _, page := range pages {
 		name := filepath.Base(page)
 		ts, err := template.New(name).Funcs(cfg.FuncMap).ParseFS(cfg.FS, page)
 		if err != nil {
-			log.Printf("unable to ParseFiles: %v", err)
+			err = fmt.Errorf("unable to ParseFiles: %w", err)
 			return nil, err
 		}
-		matches, err := fs.Glob(cfg.FS, layoutsPath)
+		matches, err := fs.Glob(cfg.FS, cfg.layoutsPath)
 		if err != nil {
-			log.Printf("unable to fs.Glob: %v", err)
+			err = fmt.Errorf("unable to fs.Glob: %w", err)
 			return nil, err
 		}
 		if len(matches) > 0 {
-			ts, err = ts.ParseFS(cfg.FS, layoutsPath)
+			ts, err = ts.ParseFS(cfg.FS, cfg.layoutsPath)
 			if err != nil {
-				log.Printf("unable to ParseGlob: %v", err)
+				err = fmt.Errorf("unable to ParseGlob: %w", err)
 				return nil, err
 			}
 		}
 		cache[name] = ts
 	}
-	return &viewManager{
-		templateCache: cache,
-		cfg:           cfg,
-	}, nil
+	return cache, nil
 }
 
 var BasicFunctions = template.FuncMap{
